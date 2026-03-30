@@ -6375,7 +6375,7 @@ void GameServerFedManager::ClientParticipateEvents(GSClient* client, const Json:
 										}
 										else
 										{
-											MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (taken weapon %s) for %s, NOT MEET REQUIREMENT", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, takenWeapon->name.c_str(), client->m_credential.c_str());
+											MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (prev %s level %d, required %d) for %s, NOT MEET REQUIREMENT", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, prevStageForcedWeaponCredit->name.c_str(), level, requiredLevel, client->m_credential.c_str());
 										}
 									}
 
@@ -6748,100 +6748,115 @@ void GameServerFedManager::CheckMultipleStageTleEventWeapon(GSClient* client, co
 
 	for (const Json::Value& eventID : eventIDs)
 	{
-		const SemEvent* evt = client->FindEvent(eventID.asString());
-		if (evt && (evt->GetStartDate() <= now) && (evt->GetEndDate() > now) && EventConditionsMet(client, *evt))
-		//if (evt && (evt->GetStartDate() <= now) && (evt->GetEndDate() > now))
-		{
-			// --- for coop events with forced weapon also add the weapon as a loan to the profile
-			if (evt->IsCoop())
-			{
-				client->m_seshatProfile->StartTrackingInventoryChanges("loan:coop");
+		if (!eventID.isString())
+			continue;
 
+		const std::string eventIdStr = eventID.asString();
+		const SemEvent* evt = client->FindEvent(eventIdStr);
+		if (evt && (evt->GetStartDate() <= now) && (evt->GetEndDate() > now) && EventConditionsMet(client, *evt))
+		{
+			// --- repair path: same weapon rules as ClientParticipateEvents coop block, only for events the player already joined
+			if (evt->IsCoop() && client->m_seshatProfile->HasJoinedEvent(eventIdStr.c_str()))
+			{
 				auto eventData = m_eventsData->GetCoopEventData(evt->GetPreset());
 				auto forcedWeapon = eventData.ForcedWeapon();
-				if (forcedWeapon)
+				if (!forcedWeapon)
+					continue;
+
+				client->m_seshatProfile->StartTrackingInventoryChanges("loan:coop");
+
+				MP_LOG(DBG_INFO, "Coop event %s preset %s forced weapon %s for %s", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+				const auto weaponCredit = client->GetHestiaConfig()->FindCredit(Hash(forcedWeapon));
+				if (weaponCredit)
 				{
-					MP_LOG(DBG_INFO, "Coop event %s preset %s forced weapon %s for %s", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
-					const auto weaponCredit = client->GetHestiaConfig()->FindCredit(Hash(forcedWeapon));
-					if (weaponCredit)
+					auto qty = client->GetHestiaConfig()->GetCreditBalance(client, weaponCredit);
+					if (!qty)
 					{
-						auto qty = client->GetHestiaConfig()->GetCreditBalance(client, weaponCredit);
-						if (!qty)
+						auto loanWeapon = true;
+
+						// --- for multipart events, check the stage: for the first stage, loan the weapon as before; for later stages, transform the weapon if the previous weapon's stage is at the required upgrade
+						if (!eventData.Multipart().empty())
 						{
-							auto loanWeapon = true;
-
-							// --- for multipart events, check the stage: for the first stage, loan the weapon as before; for later stages, transform the weapon if the previous weapon's stage is at the required upgrade
-							if (!eventData.Multipart().empty())
+							auto multipartData = m_eventsData->GetMultipartEventData(eventData.Multipart());
+							auto currentStage = multipartData.StageIndex(evt->GetPreset());
+							if (currentStage > 0)
 							{
-								auto multipartData = m_eventsData->GetMultipartEventData(eventData.Multipart());
-								auto currentStage = multipartData.StageIndex(evt->GetPreset());
-								if (currentStage > 0)
+								loanWeapon = false;
+								const Credit* takenWeapon = nullptr;
+
+								// --- check weapons from previous stage
+								// --- if any owned and at required level, take it and give the current one
+								auto prevStage = currentStage - 1;
+								auto prevStagePreset = multipartData.StageAtIndex(prevStage);
+								auto prevStageEventData = m_eventsData->GetCoopEventData(prevStagePreset);
+								auto prevStageForcedWeapon = StringHash(prevStageEventData.ForcedWeapon());
+								auto prevStageForcedWeaponCredit = client->GetHestiaConfig()->FindCredit(prevStageForcedWeapon);
+								auto prevQty = 0;
+								if (prevStageForcedWeaponCredit)
+									prevQty = (int)client->GetHestiaConfig()->GetCreditBalance(client, prevStageForcedWeaponCredit);
+								if (prevQty > 0)
 								{
-									loanWeapon = false;
-									const Credit* takenWeapon = nullptr;
-
-									// --- check weapons from previous stage
-									// --- if any owned and at required level, take it and give the current one
-									auto prevStage = currentStage - 1;
-									auto prevStagePreset = multipartData.StageAtIndex(prevStage);
-									auto prevStageEventData = m_eventsData->GetCoopEventData(prevStagePreset);
-									auto prevStageForcedWeapon = StringHash(prevStageEventData.ForcedWeapon());
-									auto prevStageForcedWeaponCredit = client->GetHestiaConfig()->FindCredit(prevStageForcedWeapon);
-									auto qty = client->GetHestiaConfig()->GetCreditBalance(client, prevStageForcedWeaponCredit);
-									if (qty > 0)
+									// --- owned, check level
+									auto upgradeCredit = GetAHWeaponsData()->GetWeaponUpgradeCredit(prevStageForcedWeaponCredit->name);
+									auto level = (int)client->GetHestiaConfig()->GetCreditBalance(client, upgradeCredit);
+									auto requiredLevel = (int)prevStageEventData.MissionRequirement(prevStageEventData.MissionCount() - 1, "Weapon_Level");
+									if (level >= requiredLevel)
 									{
-										// --- owned, check level
-										auto upgradeCredit = GetAHWeaponsData()->GetWeaponUpgradeCredit(prevStageForcedWeaponCredit->name);
-										auto level = (int)client->GetHestiaConfig()->GetCreditBalance(client, upgradeCredit);
-										auto requiredLevel = (int)prevStageEventData.MissionRequirement(prevStageEventData.MissionCount() - 1, "Weapon_Level");
-										if (level >= requiredLevel)
-										{
-											takenWeapon = prevStageForcedWeaponCredit;
-										}
-									}
-
-									if (takenWeapon)
-									{
-										MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (taken weapon %s) for %s", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, takenWeapon->name.c_str(), client->m_credential.c_str());
-
-										client->GetHestiaConfig()->ChangeCreditBalance(client, StringHash(forcedWeapon), 1);
-										if (takenWeapon && forcedWeapon && qty)
-										{
-											if (client->GetHestiaConfig()->GetCreditBalance(client, StringHash(forcedWeapon)))
-											{
-												client->GetHestiaConfig()->SetCreditBalance(client, takenWeapon, 0);
-											}
-										}
-										// --- add a notification in order to populate the weapon upgrade popup
-										Json::Value notif;
-										notif["cur_w"] = prevStageForcedWeaponCredit->name;
-										notif["next_w"] = forcedWeapon;
-										notif["cur_s"] = currentStage;
-										notif["total_s"] = multipartData.StageCount();
-
-										client->m_seshatProfile->AddNotificationFromServer("coopwupgrade", Json::FastWriter().write(notif), 0, ENM_CATEGORY | ENM_INFO);
+										takenWeapon = prevStageForcedWeaponCredit;
 									}
 									else
 									{
-										MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (taken weapon NULL) for %s", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+										MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (prev %s level %d, required %d) for %s, NOT MEET REQUIREMENT", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, prevStageForcedWeaponCredit->name.c_str(), level, requiredLevel, client->m_credential.c_str());
 									}
 								}
-							}
 
-							if (loanWeapon)
-							{
-								MP_LOG(DBG_INFO, "Coop event %s preset %s add loan weapon %s for %s", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
-								Json::Value loanData(Json::objectValue);
-								loanData["for_event"] = eventID;
-								client->m_seshatProfile->SetItemLoanData(forcedWeapon, loanData);
+								if (takenWeapon)
+								{
+									MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (taken weapon %s) for %s", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, takenWeapon->name.c_str(), client->m_credential.c_str());
+
+									client->GetHestiaConfig()->ChangeCreditBalance(client, StringHash(forcedWeapon), 1);
+
+									// --- add a notification in order to populate the weapon upgrade popup (same order as ClientParticipateEvents)
+									Json::Value notif;
+									notif["cur_w"] = prevStageForcedWeaponCredit->name;
+									notif["next_w"] = forcedWeapon;
+									notif["cur_s"] = currentStage;
+									notif["total_s"] = multipartData.StageCount();
+
+									client->m_seshatProfile->AddNotificationFromServer("coopwupgrade", Json::FastWriter().write(notif), 0, ENM_CATEGORY | ENM_INFO);
+
+									if (forcedWeapon && prevQty)
+									{
+										if (client->GetHestiaConfig()->GetCreditBalance(client, StringHash(forcedWeapon)))
+										{
+											client->GetHestiaConfig()->SetCreditBalance(client, takenWeapon, 0);
+										}
+									}
+								}
+								else
+								{
+									MP_LOG(DBG_WARN, "Coop event %s preset %s NOT ADDING loan weapon %s (taken weapon NULL) for %s", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+								}
 							}
 						}
-					}
-					else
-					{
-						MP_LOG(DBG_CRIT, "Coop event %s preset %s with invalid weapon credit %s for %s", eventID.asCString(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+
+						if (loanWeapon)
+						{
+							MP_LOG(DBG_INFO, "Coop event %s preset %s add loan weapon %s for %s", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+							Json::Value loanData(Json::objectValue);
+							loanData["for_event"] = eventID;
+							client->m_seshatProfile->SetItemLoanData(forcedWeapon, loanData);
+						}
 					}
 				}
+				else
+				{
+					MP_LOG(DBG_CRIT, "Coop event %s preset %s with invalid weapon credit %s for %s", eventIdStr.c_str(), evt->GetPreset().c_str(), forcedWeapon, client->m_credential.c_str());
+				}
+
+				auto inventory_changes = client->m_seshatProfile->StopTrackingInventoryChanges();
+				if (!inventory_changes.empty())
+					ServerSendInventoryUpdate(client, 0, std::move(inventory_changes));
 			}
 		}
 	}
