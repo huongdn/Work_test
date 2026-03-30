@@ -111,6 +111,11 @@
 #define COMEBACK_REWARD_MISSING_DAYS2				(21*86400) //21 days
 #define COMEBACK_REWARD_MISSING_DAYS3				(30*86400) //30 days
 
+// --- multipart coop only: days after end_date before loan weapon + collector cleanup on erase; 0 = original behavior
+#ifndef DELAY_CHECK_MTLE_ERASE
+#define DELAY_CHECK_MTLE_ERASE						(0)
+#endif
+
 #define MAX_SQUADMATES_TO_REDIRECT					(500)
 #define FORGE_MAX_WEAPONS							(150)
 
@@ -11249,6 +11254,17 @@ void GameServerFedManager::callbackScriptRequestEventsInfo(const SRequest &reque
 				auto forcedWeapon = eventData.ForcedWeapon();
 				if (forcedWeapon)
 				{
+					bool doCoopWeaponCleanup = true;
+#if DELAY_CHECK_MTLE_ERASE > 0
+					if (!eventData.Multipart().empty())
+					{
+						const time_t mtleCleanupAfter = evt->GetEndDate() + (time_t)DELAY_CHECK_MTLE_ERASE * 86400;
+						if (now < mtleCleanupAfter)
+							doCoopWeaponCleanup = false;
+					}
+#endif
+					if (doCoopWeaponCleanup)
+					{
 					// --- if the event has a forced weapon and it's still on loan, remove it and the attached loan data
 					client->m_seshatProfile->StartTrackingInventoryChanges("loan:coop");
 
@@ -11287,6 +11303,7 @@ void GameServerFedManager::callbackScriptRequestEventsInfo(const SRequest &reque
 					if (!inventory_changes.empty())
 					{
 						callerObj->ServerSendInventoryUpdate(client, 0, std::move(inventory_changes));
+					}
 					}
 				}
 			}
@@ -11374,10 +11391,10 @@ void GameServerFedManager::callbackScriptRequestEventsInfo(const SRequest &reque
 			}
  			jResponse["add"].append(jEvent);
 		}
-
-		if (allEventIDs.size())
-			callerObj->CheckMultipleStageTleEventWeapon(client, allEventIDs);		
 	}
+
+	if (allEventIDs.size())
+		callerObj->CheckMultipleStageTleEventWeapon(client, allEventIDs);
 
 #ifdef SKIRMISH_EVENT
 	auto skirmishEvents = callerObj->FilterCustomSemEvent(client, EVENT_TYPE_SKIRMISH);
