@@ -11408,9 +11408,6 @@ void GameServerFedManager::callbackScriptRequestEventsInfo(const SRequest &reque
 		}
 	}
 
-	if (allEventIDs.size())
-		callerObj->CheckMultipleStageTleEventWeapon(client, allEventIDs);
-
 #ifdef SKIRMISH_EVENT
 	auto skirmishEvents = callerObj->FilterCustomSemEvent(client, EVENT_TYPE_SKIRMISH);
 
@@ -11628,6 +11625,10 @@ void GameServerFedManager::callbackScriptRequestEventsInfo(const SRequest &reque
 	}
 	if (eventIDs.size())
 		callerObj->ClientParticipateEvents(client, eventIDs);
+
+	// --- after auto-join: repair multipart coop loan / upgrade if participate skipped or left inventory inconsistent
+	if (allEventIDs.size())
+		callerObj->CheckMultipleStageTleEventWeapon(client, allEventIDs);
 
 	// --- I changed some rewards, I want to make sure the modified json is not used by mistake
 	jResponse.clear();
