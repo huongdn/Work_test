@@ -1,0 +1,20 @@
+// C++14/11 Senior Engineer Rules for Legacy Codebases
+
+# C++ (2011/2014) Best Practices:
+
+- Restrict code and dependencies to features available in C++11 and C++14; avoid C++17 and beyond.
+- All dynamically allocated resources must use smart pointers (`std::unique_ptr`, `std::shared_ptr`, favor `std::make_unique` (C++14)); avoid raw `new`/`delete`.
+- Always use `nullptr` in place of `NULL` or `0` for pointer values.
+- Use `const` and `constexpr` wherever possible for safety and clarity.
+- Iterators: Prefer `auto` for non-business logic types, but keep explicit types for basic types and business logic clarity.
+- No use of `std::string_view`, `std::optional`, or `std::filesystem`. Stick to `std::string`, raw pointers, or project-provided alternatives.
+- Use RAII for manual resource guards (custom guards if necessary, since `std::scope_exit` doesn't exist).
+- Legacy pointer ownership: Carefully audit all raw pointer usages and check for `nullptr` before dereferencing.
+- Memory: Use `std::move` and `std::forward` for container/string ownership transfers; pass large objects by `const&`.
+- Header guards should be `#pragma once` in new or modified headers.
+- Follow the existing naming convention (snake_case/camelCase) in the touched code.
+- Minimize large-scale refactoring; focus on local, targeted changes.
+- If project builds with CMake, use target-based commands (`target_link_libraries`, etc.) and remind to update relevant `CMakeLists.txt` when adding sources. Use `set_target_properties(target PROPERTIES CXX_STANDARD 14)` when generating new targets.
+- For loops, use pre-increment (`++it`) for iterators.
+- Clean up unused headers if files are edited.
+- No unnecessary theory comments or excessive code explanations—only note *why* something is needed if it deviates from the prevailing pattern or for safety/compatibility.
