@@ -1,5 +1,4 @@
 import sys
-import glob
 import os.path
 import site
 import json
@@ -17,29 +16,17 @@ site.addsitedir(os.path.join(os.path.dirname(__file__), '../../../../make'))
 import urllib.request, urllib.error, urllib.parse
 from FedRex import FedWrapper
 from FedRex.Utils import Utils
-import config # type: ignore
-from GetSeshatProfile import get_seshat_profile # type: ignore
-from SetSeshatProfile import set_seshat_profile # type: ignore
+import config  # type: ignore
 
-# Import your existing logger function
-from Utils import get_logger # type: ignore
-import TaskPool # type: ignore
+from Utils import get_logger  # type: ignore
+import TaskPool  # type: ignore
 
 # Status code constants
 class StatusCode:
-    """Status code constants for API responses."""
     SUCCESS = 200
     NOT_FOUND = 404
     USER_ONLINE = 888
     ERROR = 999
-
-# Field type constants
-class FieldType:
-    """Field type constants for compensation logic."""
-    NORMAL = 'NORMAL'  # Normal numeric fields - use compensation calculation
-    RESTORE = 'RESTORE'  # Fields that should be restored to start_date backup value (timestamp, leaderboard_id, etc.)
-    MILESTONE = 'MILESTONE'  # Milestone fields - use max value from start, end, and current
-    OBJECT = 'OBJECT'  # Nested object fields - restore entire object with all sub-fields from start_date backup
 
 CLIENT_IDS = {
     '2208': {
@@ -68,122 +55,62 @@ CLIENT_IDS = {
     }
 }
 
-INPUT_FILE = os.path.join(os.path.dirname(__file__), 'my_data.json')
-OUTPUT_FILE_CHECK = os.path.join(os.path.dirname(__file__), 'my_data_check_result.csv')
-OUTPUT_FILE_ERRORS = os.path.join(os.path.dirname(__file__), 'my_data_errors.csv')
-LOG_FILE = os.path.join(os.path.dirname(__file__), 'my_data_log.txt')
-COMPENSATION_LIST = os.path.join(os.path.dirname(__file__), 'compensation_needed.json')
-OUTPUT_COMPENSATE_FAILED = os.path.join(os.path.dirname(__file__), 'my_data_compensate_failed.csv')
+DEFAULT_ENV = 'mdc'
+OUTPUT_FILE_CHECK = os.path.join(os.path.dirname(__file__), 'sr12_skin_check_result.csv')
+OUTPUT_FILE_ERRORS = os.path.join(os.path.dirname(__file__), 'sr12_skin_errors.csv')
+LOG_FILE = os.path.join(os.path.dirname(__file__), 'sr12_skin_log.txt')
+FIX_LIST_FILE = os.path.join(os.path.dirname(__file__), 'sr12_skin_fix_needed.json')
+OUTPUT_FIX_FAILED = os.path.join(os.path.dirname(__file__), 'sr12_skin_fix_failed.csv')
 
-# Script configuration (edit these values as needed)
+SR12_SKIN_KEY = 'SR12_HC_Skin'
+SR12_SKIN_ATTRS_PATH = '_game_save._loadout.attrs.SR12_HC_Skin'
+PROFILE_FIELDS = 'inventory,_game_save._loadout.attrs'
+SR12_SKIN_TARGET_ATTRS = {
+    'Accuracy': 5,
+    'Clip': 5,
+    'Thermal': 5,
+    'Zoom': 5,
+}
+
 CONFIG = {
-    # Set to True to skip compensation execution (checks will still run) default True
-    'dry_run': True,
-    # Whether to run the main check phase to generate compensation_needed.json default True
-    'get_compensation': True,
-    # Whether to run test compensation from COMPENSATION_LIST (compensation_needed.json) default False
-    'run_test': False,
-    # Platform and datacenter
-    'pid': "2208",
-    'dc': "mdc",
-    # Fields to check; supports string (defaults to NORMAL) or dict with 'field' and 'type'
-    'fields_to_check': [
-        {"field": "_pvp_stats.scratchpad.elo", "type": FieldType.NORMAL},
-        {"field": "_mp_stats.score", "type": FieldType.NORMAL},
-        {"field": "_mp_stats.lb", "type": FieldType.RESTORE},
-        {"field": "_defender_leaderboard.elo", "type": FieldType.NORMAL},
-        {"field": "_defender_leaderboard.personal_milestone", "type": FieldType.MILESTONE},
-        {"field": "_defender_leaderboard.ts", "type": FieldType.RESTORE},
-        {"field": "inventory.clan_battlepass", "type": FieldType.MILESTONE},
-        {"field": "inventory.clan_battlepass_xp", "type": FieldType.NORMAL},
-        {"field": "_game_save.clanBP.lb", "type": FieldType.RESTORE},
-        {"field": "_game_save.clanBP.claimedRewards", "type": FieldType.MILESTONE}, # Need recheck
-        {"field": "_game_save.clanBP.claimedRewardsPremium", "type": FieldType.MILESTONE}, # Need recheck
-        {"field": "_game_save.clanBP.unlockedChapters", "type": FieldType.MILESTONE}, # Need recheck
-        # {"field": "_game_save.clanBP.premiumMembers", "type": FieldType.OBJECT}, # Need recheck
-        {"field": "inventory.defender_bas_item_duration_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_gold_cash_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_pvp_pack_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_pvp_pack_cooldown_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_trophy_clan_cash_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_vault_cap_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.defender_vault_gen_buff", "type": FieldType.MILESTONE},
-        {"field": "inventory.battlepass_complete_chapter", "type": FieldType.MILESTONE},
-        {"field": "inventory.battlepass_platinum", "type": FieldType.MILESTONE},
-        {"field": "inventory.battlepass_plus", "type": FieldType.MILESTONE},
-        {"field": "inventory.battlepass_rush_chapter", "type": FieldType.MILESTONE},
-        {"field": "inventory.battlepass_unlocked", "type": FieldType.MILESTONE},
-        {"field": "inventory.conq", "type": FieldType.NORMAL}, # Outpost score
-        # {"field": "_game_save._battle_pass", "type": FieldType.OBJECT},
-        {"field": "_game_save._battle_pass.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CCP.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CGP.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CNP.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CPC.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CRC.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CSU.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.CTP.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FBS.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FDT.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FPE.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FPR.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FPU.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FRL.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FRM.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FSE.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FSL.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FSX.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.FTS.lb", "type": FieldType.RESTORE},
-        # {"field": "_conq_outposts.MDF.lb", "type": FieldType.RESTORE},
-        # {"field": "_game_save.clanBP.xpBonusTs", "type": FieldType.MILESTONE}, # Need recheck
-        # Example of restore field (timestamp, leaderboard_id, etc.):
-        # {"field": "_pvp_stats.scratchpad.last_season_timestamp", "type": FieldType.RESTORE},
-        # {"field": "_pvp_stats.scratchpad.leaderboard_id", "type": FieldType.RESTORE},
-        # Example of object field (restores entire nested object with all sub-fields):
-        # {"field": "_game_save._battle_pass", "type": FieldType.OBJECT},
-        # You can also use string format (backward compatible):
-        # "_pvp_stats.scratchpad.elo"  # defaults to FieldType.NORMAL
-    ],
-    # Backup comparison
-    'start_date': "2025-12-21",
-    'end_date': "2025-12-22"
+    # Step 1: scan users from CSV, write check CSV + sr12_skin_fix_needed.json
+    'run_inventory_check': True,
+    # Step 2: apply fixes (runs after check in same run, or alone from fix list file)
+    'apply_loadout_fix': False,
+    # CSV: credential_uuid,platform_id[,env]
+    'users_input_file': os.path.join(os.path.dirname(__file__), 'users.csv'),
 }
 
 ##################################################################################################
 
+
 def setup_file_logger(log_file_path):
-    """Setup a logger that creates a new file for each run."""
     file_logger = logging.getLogger('file_logger')
     file_logger.setLevel(logging.INFO)
-    
-    # Remove existing handlers
     file_logger.handlers = []
-    
-    # Create new file with timestamp (recommended)
+
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file_with_timestamp = log_file_path.replace('.txt', f'_{timestamp}.txt')
-    
+
     file_handler = RotatingFileHandler(
         log_file_with_timestamp,
-        maxBytes=10*1024*1024,
-        backupCount=50
+        maxBytes=10 * 1024 * 1024,
+        backupCount=50,
     )
     file_handler.setLevel(logging.INFO)
-    
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        datefmt='%Y-%m-%d %H:%M:%S',
     )
     file_handler.setFormatter(formatter)
     file_logger.addHandler(file_handler)
-    
     return file_logger
 
-# Setup file logger
+
 file_logger = setup_file_logger(LOG_FILE)
 
+
 def log_to_file(message, level='info'):
-    """Helper function to log messages to the file."""
     if level.lower() == 'info':
         file_logger.info(message)
     elif level.lower() == 'error':
@@ -195,871 +122,540 @@ def log_to_file(message, level='info'):
     elif level.lower() == 'critical':
         file_logger.critical(message)
 
-# Use your existing logger for console/logging system
-logger = get_logger('Fix season point error')
 
-def validate_config(config):
-    """Validate CONFIG dictionary has required fields and valid values.
-    
-    Args:
-        config: Configuration dictionary to validate
-        
-    Returns:
-        tuple: (is_valid: bool, error_message: str)
-    """
-    required_keys = ['dry_run', 'get_compensation', 'run_test', 'pid', 'dc', 'fields_to_check', 'start_date', 'end_date']
-    
-    # Check required keys exist
+logger = get_logger('SR12 HC Skin loadout fix')
+
+
+def validate_config(cfg):
+    required_keys = (
+        'run_inventory_check',
+        'apply_loadout_fix',
+        'users_input_file',
+    )
     for key in required_keys:
-        if key not in config:
+        if key not in cfg:
             return False, f"Missing required config key: {key}"
-    
-    # Validate boolean flags
-    if not isinstance(config['dry_run'], bool):
-        return False, "Config 'dry_run' must be a boolean"
-    if not isinstance(config['get_compensation'], bool):
-        return False, "Config 'get_compensation' must be a boolean"
-    if not isinstance(config['run_test'], bool):
-        return False, "Config 'run_test' must be a boolean"
-    
-    # Validate pid and dc are strings
-    if not isinstance(config['pid'], str) or not config['pid']:
-        return False, "Config 'pid' must be a non-empty string"
-    
-    if not isinstance(config['dc'], str) or not config['dc']:
-        return False, "Config 'dc' must be a non-empty string"
-    
-    # Validate fields_to_check is a list
-    if not isinstance(config['fields_to_check'], list) or len(config['fields_to_check']) == 0:
-        return False, "Config 'fields_to_check' must be a non-empty list"
-    
-    # Validate date format (YYYY-MM-DD)
-    date_format = "%Y-%m-%d"
-    for date_key in ['start_date', 'end_date']:
-        date_str = config[date_key]
-        if not isinstance(date_str, str):
-            return False, f"Config '{date_key}' must be a string"
-        try:
-            datetime.datetime.strptime(date_str, date_format)
-        except ValueError:
-            return False, f"Config '{date_key}' must be in format YYYY-MM-DD, got: {date_str}"
-    
-    # Validate start_date < end_date
-    start_dt = datetime.datetime.strptime(config['start_date'], date_format)
-    end_dt = datetime.datetime.strptime(config['end_date'], date_format)
-    if start_dt >= end_dt:
-        return False, f"Config 'start_date' ({config['start_date']}) must be before 'end_date' ({config['end_date']})"
-    
-    return True, ""
+    for flag in ('run_inventory_check', 'apply_loadout_fix'):
+        if not isinstance(cfg[flag], bool):
+            return False, f"Config '{flag}' must be a boolean"
+    if not isinstance(cfg['users_input_file'], str) or not cfg['users_input_file']:
+        return False, "Config 'users_input_file' must be a non-empty string"
+    return True, ''
+
 
 def safe_load_json(filepath):
-    """
-    Loads a JSON file safely, handling potential errors.
-    """
-    logger.info("Start loading JSON from: %s", filepath)
-    log_to_file(f"Start loading JSON from: {filepath}")
-    
+    logger.info('Start loading JSON from: %s', filepath)
+    log_to_file(f'Start loading JSON from: {filepath}')
     try:
         with open(filepath, 'r') as f:
             data = json.load(f)
-        logger.info("Successfully loaded JSON from: %s", filepath)
-        log_to_file(f"Successfully loaded JSON from: {filepath}")
+        logger.info('Successfully loaded JSON from: %s', filepath)
+        log_to_file(f'Successfully loaded JSON from: {filepath}')
         return data
     except FileNotFoundError:
-        error_msg = f"File not found: {filepath}"
+        error_msg = f'File not found: {filepath}'
         logger.error(error_msg)
         log_to_file(error_msg, 'error')
         return None
     except json.JSONDecodeError as e:
-        error_msg = f"Invalid JSON in file: {filepath}. Error: {e}"
+        error_msg = f'Invalid JSON in file: {filepath}. Error: {e}'
         logger.error(error_msg)
         log_to_file(error_msg, 'error')
         return None
     except Exception as e:
-        error_msg = f"An unexpected error occurred while loading JSON from: {filepath}. Error: {e}"
+        error_msg = f'Unexpected error loading JSON from: {filepath}. Error: {e}'
         logger.exception(error_msg)
         log_to_file(error_msg, 'error')
         return None
 
+
+def safe_load_csv(filepath):
+    logger.info('Start loading CSV from: %s', filepath)
+    log_to_file(f'Start loading CSV from: {filepath}')
+    rows = []
+    try:
+        with open(filepath, 'r', newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if not row:
+                    continue
+                if len(row) < 2:
+                    continue
+                credential_raw = (row[0] or '').strip()
+                platform_id_raw = (row[1] or '').strip()
+                env_raw = (row[2] or '').strip() if len(row) > 2 else ''
+                if not credential_raw or not platform_id_raw:
+                    continue
+                # Skip header row like: credential,platform_id[,env]
+                if credential_raw.lower() in ('credential', 'user', 'fed_id', 'uuid') and \
+                   platform_id_raw.lower() in ('pid', 'platform', 'platform_id'):
+                    continue
+                rows.append((credential_raw, platform_id_raw, env_raw))
+        logger.info('Successfully loaded CSV rows: %s', len(rows))
+        log_to_file(f'Successfully loaded CSV rows: {len(rows)}')
+        return rows
+    except FileNotFoundError:
+        error_msg = f'CSV file not found: {filepath}'
+        logger.error(error_msg)
+        log_to_file(error_msg, 'error')
+        return None
+    except Exception as e:
+        error_msg = f'Unexpected error loading CSV from: {filepath}. Error: {e}'
+        logger.exception(error_msg)
+        log_to_file(error_msg, 'error')
+        return None
+
+
 def chose_client_id(pid, dc):
-    """Get client ID for given platform and datacenter."""
     client_id = CLIENT_IDS.get(pid, {}).get(dc, {}).get('beta') or \
-                CLIENT_IDS.get(pid, {}).get(dc, {}).get('gold') or ""
-    
+        CLIENT_IDS.get(pid, {}).get(dc, {}).get('gold') or ''
     if not client_id:
-        error_msg = f"No client ID found for pid: {pid}, dc: {dc}"
+        error_msg = f'No client ID found for pid: {pid}, dc: {dc}'
         logger.warning(error_msg)
         log_to_file(error_msg, 'warning')
-    
     return client_id
 
-def process_compensate_user(credential, fields, fed_user):
-    log_msg = f"[PID: {os.getpid()}] Starting process_compensate_user for credential: {credential}"
-    log_to_file(log_msg)
+
+def get_nested_value(profile, field_path):
+    val = profile
+    for part in field_path.split('.'):
+        if isinstance(val, dict):
+            val = val.get(part)
+        else:
+            return None
+    return val
+
+
+def inventory_has_sr12_skin(profile):
+    inventory = profile.get('inventory') or {}
+    count = inventory.get(SR12_SKIN_KEY)
+    if count is None:
+        return False, None
+    try:
+        count_int = int(count)
+    except (TypeError, ValueError):
+        return False, count
+    return count_int >= 1, count_int
+
+
+def get_loadout_sr12_attrs(profile):
+    attrs = get_nested_value(profile, '_game_save._loadout.attrs')
+    if not isinstance(attrs, dict):
+        return None
+    return attrs.get(SR12_SKIN_KEY)
+
+
+def attrs_need_fix(current_attrs):
+    if current_attrs is None:
+        return True
+    return json.dumps(current_attrs, sort_keys=True) != json.dumps(
+        SR12_SKIN_TARGET_ATTRS, sort_keys=True
+    )
+
+
+def evaluate_sr12_skin(profile):
+    has_skin, inventory_count = inventory_has_sr12_skin(profile)
+    current_attrs = get_loadout_sr12_attrs(profile) if has_skin else None
+    should_fix = has_skin and attrs_need_fix(current_attrs)
+    return {
+        'has_inventory_skin': has_skin,
+        'inventory_count': inventory_count,
+        'current_attrs': current_attrs,
+        'should_fix': should_fix,
+    }
+
+
+def is_user_online(fed_user, credential):
+    social_profile_str = fed_user.osiris.get_profile(credential)
+    social_profile = json.loads(social_profile_str)
+    return social_profile.get('online', False)
+
+
+def fetch_profile_subset(fed_user, credential):
+    profile_str = fed_user.seshat.get_profile(
+        selector='',
+        credential=credential,
+        include_fields=PROFILE_FIELDS,
+    )
+    return json.loads(profile_str)
+
+
+def check_sr12_skin_user(credential, fed_user):
+    log_to_file(f'[PID: {os.getpid()}] Checking SR12 skin for: {credential}')
     result = {'credential': credential}
     status = StatusCode.SUCCESS
     reason = 'OK'
 
-    # First check if user is online
     try:
-        social_profile_str = fed_user.osiris.get_profile(credential)
-        social_profile = json.loads(social_profile_str)
-        is_user_online = social_profile.get("online", False)
-        if is_user_online:
-            status = StatusCode.USER_ONLINE
-            reason = "User is online"
-            error_msg = f"Logic Error for {credential}: {status} - {reason}"
-            log_to_file(error_msg, 'error')
-            result['status'] = status
-            result['reason'] = reason
+        if is_user_online(fed_user, credential):
+            result['status'] = StatusCode.USER_ONLINE
+            result['reason'] = 'User is online'
+            log_to_file(f'User online, skipping: {credential}', 'warning')
             return json.dumps(result)
-            
+
+        profile = fetch_profile_subset(fed_user, credential)
+        evaluation = evaluate_sr12_skin(profile)
+        result.update(evaluation)
+
     except urllib.error.HTTPError as e:
         status = e.code
         reason = str(e.read())
-        error_msg = f"HTTPError for {credential}: {status} - {reason}"
-        log_to_file(error_msg, 'error')
+        log_to_file(f'HTTPError for {credential}: {status} - {reason}', 'error')
         result['status'] = status
         result['reason'] = reason
         return json.dumps(result)
     except Exception as e:
-        status = StatusCode.ERROR
         reason = Utils.exception_to_string(e)
-        error_msg = f"Exception for {credential}: {reason}"
-        log_to_file(error_msg, 'error')
-        result['status'] = status
+        log_to_file(f'Exception checking {credential}: {reason}', 'error')
+        result['status'] = StatusCode.ERROR
         result['reason'] = reason
         raise
 
-    
-    # Then change profile base on fields data
-    try:
-        profile_obj = {}
-				
-        for field in fields:
-            field_str = field.get('field', "")
-            if not field_str:
-                continue
-                
-            field_type = field.get('field_type', FieldType.NORMAL)
-            use_start_backup = field.get('use_start_backup', False)
-            
-            # Handle RESTORE and OBJECT types (both restore from start_date backup)
-            if use_start_backup or field_type in (FieldType.RESTORE, FieldType.OBJECT):
-                # For RESTORE and OBJECT fields, use the old value from start date
-                backup_value_start = field.get('backup_value_start')
-                if backup_value_start is not None:
-                    # If the value is a dict/list (nested object), it will restore all sub-fields
-                    # The batch_set operation will set the entire object at the specified path
-                    profile_obj[field_str] = backup_value_start
-                    value_type_name = type(backup_value_start).__name__
-                    field_type_name = field_type if isinstance(field_type, str) else 'UNKNOWN'
-                    log_msg = f"Restoring field {field_str} (type: {field_type_name}) with value type: {value_type_name}"
-                    log_to_file(log_msg)
-            elif field_type == FieldType.MILESTONE:
-                # For milestone fields, use the max value from start, end, and current
-                max_value = field.get('max_value')
-                if max_value is not None:
-                    profile_obj[field_str] = max_value
-            else:
-                # For normal fields, calculate compensation normally
-                value = field.get('current_value', 0)
-                value_add = field.get('value_to_compensate', 0)
-                finally_value = value + value_add
-                if value_add:                
-                    profile_obj[field_str] = finally_value
-
-        # Only update profile if there are fields to update
-        if profile_obj:
-            # Log the profile_obj structure for debugging nested objects
-            log_msg = f"Updating profile with {len(profile_obj)} field(s). Fields: {list(profile_obj.keys())}"
-            log_to_file(log_msg)
-            for field_key, field_value in profile_obj.items():
-                if isinstance(field_value, (dict, list)):
-                    log_msg = f"Field {field_key} is a nested object (type: {type(field_value).__name__}) - will restore all sub-fields"
-                    log_to_file(log_msg)
-            fed_user.seshat.set_profile(object=json.dumps(profile_obj), operation='batch_set', selector='', credential=credential)
-            result['status'] = StatusCode.SUCCESS
-            result['reason'] = "Profile updated successfully"
-        else:
-            result['status'] = StatusCode.SUCCESS
-            result['reason'] = "No fields to update"
-            
-    except urllib.error.HTTPError as e:
-        status = e.code
-        reason = str(e.read())
-        error_msg = f"HTTPError for {credential}: {status} - {reason}"
-        log_to_file(error_msg, 'error')
-        result['status'] = status
-        result['reason'] = reason
-    except Exception as e:
-        status = StatusCode.ERROR
-        reason = Utils.exception_to_string(e)
-        error_msg = f"Exception for {credential}: {reason}"
-        log_to_file(error_msg, 'error')
-        result['status'] = status
-        result['reason'] = reason
-        raise
-
-    return json.dumps(result)
-
-def compare_current_profile_with_backup(_credential, fields_to_compare, fed_user, _start_date, _end_date, path='', device=''):
-    """Compare current profile with backup. This function will be run in TaskPool."""
-    log_msg = f"[PID: {os.getpid()}] Starting profile comparison for credential: {_credential}"
-    log_to_file(log_msg)
-    
-    result = {'credential': _credential}
-    status = StatusCode.SUCCESS
-    reason = 'OK'
-    
-    try:
-        # Get current profile
-        profile_now_str = fed_user.seshat.get_profile(
-            selector=path, 
-            credential=_credential, 
-            include_fields=convert_field_list_to_string(fields_to_compare)
-        )
-        profile_now = json.loads(profile_now_str)
-        
-        start_date_backup = get_backup_profile_for_day(fed_user=fed_user, cred=_credential, day=_start_date)
-        end_date_backup = get_backup_profile_for_day(fed_user=fed_user, cred=_credential, day=_end_date)
-
-        if start_date_backup is None or end_date_backup is None:
-            result['status'] = StatusCode.NOT_FOUND
-            result['reason'] = 'Missing backup profile'
-            return json.dumps(result)
-        
-        # Compare fields
-        comparison_results = []
-        for field_item in fields_to_compare:
-            # Support both old format (string) and new format (dict)
-            if isinstance(field_item, dict):
-                field = field_item.get('field', '')
-                field_type = field_item.get('type', FieldType.NORMAL)
-            else:
-                field = str(field_item)
-                field_type = FieldType.NORMAL
-            
-            compare_result = compare_field(
-                field=field,
-                field_type=field_type,
-                current_profile=profile_now, 
-                backed_up_profile_start=start_date_backup,
-                backed_up_profile_end=end_date_backup
-            )
-            comparison_results.append(compare_result)
-        
-        result['comparison_results'] = comparison_results
-        result['profile_current'] = profile_now
-        result['profile_backup_start'] = start_date_backup
-        result['profile_backup_end'] = end_date_backup
-        
-    except urllib.error.HTTPError as e:
-        status = e.code
-        reason = str(e.read())
-        error_msg = f"HTTPError for {_credential}: {status} - {reason}"
-        log_to_file(error_msg, 'error')
-        result['status'] = status
-        result['reason'] = reason
-    except Exception as e:
-        status = StatusCode.ERROR
-        reason = Utils.exception_to_string(e)
-        error_msg = f"Exception for {_credential}: {reason}"
-        log_to_file(error_msg, 'error')
-        result['status'] = status
-        result['reason'] = reason
-        raise
-
-    used_access_token = fed_user.janus.get_access_token_full_object()
-    result['access_token'] = used_access_token   
     result['status'] = status
     result['reason'] = reason
-    
-    # Log completion
-    completion_msg = f'Completed processing for {_credential} - Status: {status}'
-    log_to_file(completion_msg)
-    
+    log_to_file(f'Check done for {credential}: should_fix={result.get("should_fix")}')
     return json.dumps(result)
 
-def get_backup_profile_for_day(fed_user, cred, day):
-    """Get backup profile for a specific day."""
-    start = f"{day} 00:00:00Z"
-    end = f"{day} 23:59:59Z"
-    
-    backups = fed_user.seshat.get_profile_backups(
-        credential=cred, 
-        start_date=start, 
-        end_date=end
-    )
-    backup_list = json.loads(backups)
-    
-    if not backup_list:
-        error_msg = f"No backups found for credential: {cred}"
-        log_to_file(error_msg, 'warning')
-        return None
-    
-    # Sort the backups in descending order based on the 'date' field
-    sorted_backups = sorted(
-        backup_list,
-        key=lambda x: x['date'],
-        reverse=True  # Sort from latest to oldest
-    )
 
-    # Use the first (most recent) backup after sorting
-    last_backup = sorted_backups[0]
-    backup_id = last_backup['id']
-    backup_profile_str = fed_user.seshat.get_profile_backup_by_id(
-        credential=cred, 
-        name='myprofile', 
-        id=backup_id
-    )
-    backup_profile = json.loads(backup_profile_str)
-    
-    return backup_profile
+def process_fix_sr12_skin_user(credential, fed_user):
+    log_to_file(f'[PID: {os.getpid()}] Fixing SR12 skin attrs for: {credential}')
+    result = {'credential': credential}
 
-def compare_field(field, field_type, current_profile, backed_up_profile_start, backed_up_profile_end):
-    """Compare a specific field between current and backup profiles.
-    
-    Args:
-        field: Field path string (e.g., '_pvp_stats.scratchpad.elo')
-        field_type: Field type constant (FieldType.NORMAL, FieldType.RESTORE, FieldType.MILESTONE, FieldType.OBJECT)
-        current_profile: Current profile dictionary
-        backed_up_profile_start: Backup profile from start date
-        backed_up_profile_end: Backup profile from end date
-    """
-    # Split the field path by dots to navigate the nested structure
-    field_parts = field.split('.')
-        
-    def get_value(profile):
-        val = profile
-        for part in field_parts:
-            if isinstance(val, dict):
-                val = val.get(part, None)
-            else:
-                val = None
-                break
-        return val
-        
-    start_value = get_value(backed_up_profile_start)
-    end_value = get_value(backed_up_profile_end)
-    current_value = get_value(current_profile)
-    
-    # Determine if this field should use start_date backup value directly
-    use_start_backup = field_type == FieldType.RESTORE
-    use_object_restore = field_type == FieldType.OBJECT
-    use_max_value = field_type == FieldType.MILESTONE
-    value_to_compensate = 0
-    max_value = None
-    
-    # Determine should_fix based on field type
-    if use_start_backup or use_object_restore:
-        # For RESTORE and OBJECT fields, should_fix if current differs from start backup
-        # For nested objects (dict/list), use JSON comparison to ensure all sub-fields are compared
-        if isinstance(start_value, (dict, list)) and isinstance(current_value, (dict, list)):
-            # Use JSON comparison for nested objects to ensure all sub-fields are compared
-            should_fix = (start_value is not None and current_value is not None and 
-                         json.dumps(start_value, sort_keys=True) != json.dumps(current_value, sort_keys=True))
-        else:
-            should_fix = (start_value is not None and current_value is not None and 
-                         start_value != current_value)
-    elif use_max_value:
-        # For milestone fields, use max value from start, end, and current
-        values_to_compare = [v for v in [start_value, end_value, current_value] if v is not None]
-        if values_to_compare:
-            max_value = max(values_to_compare)
-            should_fix = (current_value is None or current_value != max_value)
-        else:
-            max_value = None
-            should_fix = False
-    else:
-        # For normal fields, should_fix if value_to_compensate > 0
-        value_to_compensate = start_value - end_value if (start_value is not None and end_value is not None) else None
-        should_fix = value_to_compensate > 0 if value_to_compensate is not None else False
+    try:
+        if is_user_online(fed_user, credential):
+            result['status'] = StatusCode.USER_ONLINE
+            result['reason'] = 'User is online'
+            return json.dumps(result)
 
-    # Compare values
-    comparison_result = {
-        'field': field,
-        'field_type': field_type,
-        'current_value': current_value,
-        'backup_value_start': start_value,
-        'backup_value_end': end_value,
-        'should_fix': should_fix,
-        'value_to_compensate': value_to_compensate,
-        'use_start_backup': use_start_backup or use_object_restore,  # Both RESTORE and OBJECT use start backup
-        'max_value': max_value if use_max_value else None
-    }
-    
-    return comparison_result
+        profile = fetch_profile_subset(fed_user, credential)
+        evaluation = evaluate_sr12_skin(profile)
 
-def prepare_fed_user(client_id, dc):       
-    """Prepare FedWrapper user."""
-    log_msg = f"Preparing FedWrapper user with client_id: {client_id}, dc: {dc}"
+        if not evaluation['has_inventory_skin']:
+            result['status'] = StatusCode.SUCCESS
+            result['reason'] = 'No SR12_HC_Skin in inventory (skipped)'
+            return json.dumps(result)
+
+        if not evaluation['should_fix']:
+            result['status'] = StatusCode.SUCCESS
+            result['reason'] = 'Loadout attrs already correct (skipped)'
+            return json.dumps(result)
+
+        profile_obj = {SR12_SKIN_ATTRS_PATH: SR12_SKIN_TARGET_ATTRS}
+        fed_user.seshat.set_profile(
+            object=json.dumps(profile_obj),
+            operation='batch_set',
+            selector='',
+            credential=credential,
+        )
+        result['status'] = StatusCode.SUCCESS
+        result['reason'] = 'Updated _game_save._loadout.attrs.SR12_HC_Skin'
+        log_to_file(f'Fixed {credential}: set {SR12_SKIN_ATTRS_PATH}')
+
+    except urllib.error.HTTPError as e:
+        result['status'] = e.code
+        result['reason'] = str(e.read())
+        log_to_file(f'HTTPError fixing {credential}: {result["status"]} - {result["reason"]}', 'error')
+    except Exception as e:
+        result['status'] = StatusCode.ERROR
+        result['reason'] = Utils.exception_to_string(e)
+        log_to_file(f'Exception fixing {credential}: {result["reason"]}', 'error')
+        raise
+
+    return json.dumps(result)
+
+
+def prepare_fed_user(client_id, dc):
+    log_msg = f'Preparing FedWrapper user with client_id: {client_id}, dc: {dc}'
     logger.info(log_msg)
     log_to_file(log_msg)
-    
-    fed_user = FedWrapper.FedWrapper()  
-    admin_username = config.ADMIN_USERNAME
-    admin_password = config.ADMIN_PASSWORD
-    scopes = config.SCOPES_LIST + ' storage_backup' 
-    device = ''
-    device_info = None
-    
-    if device != '':
-       device_info = Utils.prepare_device_info(device)
-    
+
+    fed_user = FedWrapper.FedWrapper()
+    scopes = config.SCOPES_LIST + ' storage_backup'
+
     try:
         fed_user.initialize(
-            client_id=client_id, 
-            datacenter=dc, 
-            pandora_url='', 
-            credential=admin_username, 
-            password=admin_password, 
-            for_credential='', 
-            scopes=scopes, 
-            access_token='', 
-            device_info=device_info
+            client_id=client_id,
+            datacenter=dc,
+            pandora_url='',
+            credential=config.ADMIN_USERNAME,
+            password=config.ADMIN_PASSWORD,
+            for_credential='',
+            scopes=scopes,
+            access_token='',
+            device_info=None,
         )
-        log_msg = f"Successfully initialized FedWrapper user"
-        logger.info(log_msg)
-        log_to_file(log_msg)
-        
+        log_to_file('Successfully initialized FedWrapper user')
     except Exception as e:
         error_msg = f'Failed to get access token on {client_id} {dc}: {str(e)}'
         logger.exception(error_msg)
         log_to_file(error_msg, 'error')
         raise
-    
+
     return fed_user
 
-def convert_field_list_to_string(field_list):
-    """Convert a list of fields to a comma-separated string.
-    
-    Supports both formats:
-    - List of strings: ['field1', 'field2'] -> 'field1,field2'
-    - List of dicts: [{'field': 'field1', 'type': 'NORMAL'}, ...] -> 'field1,field2'
-    """
-    field_names = []
-    for item in field_list:
-        if isinstance(item, dict):
-            field_names.append(item.get('field', ''))
-        else:
-            field_names.append(str(item))
-    return ",".join(field_names)
 
-def process_check_users_with_taskpool(data, pid, dc, fed_user, fields_to_compare, start_date, end_date, dry_run=True):
-    """Process multiple users for profile comparison using TaskPool.
-    
-    Args:
-        data: User data dictionary or list
-        pid: Platform ID
-        dc: Datacenter
-        fed_user: FedWrapper user instance
-        fields_to_compare: List of fields to compare
-        start_date: Start date string
-        end_date: End date string
-        dry_run: If True, skip compensation execution (check logic still runs)
-    """
-    total_users = 0
-    jobs = []
+def prepare_all_fed_users():
+    fed_users = {}
+    for pid, env_map in CLIENT_IDS.items():
+        for env in env_map.keys():
+            client_id = chose_client_id(pid, env)
+            if not client_id:
+                continue
+            fed_user = prepare_fed_user(client_id=client_id, dc=env)
+            fed_users[(pid, env)] = fed_user
+            log_to_file(f'Initialized Fed user for pid={pid}, env={env}')
+    return fed_users
 
-    # START TIMING
-    start_time = time.time()
-    logger.info(f"TaskPool processing START TIME: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Check if data structure matches your example
-    if dc in data and pid in data[dc]:
-        users_dict = data[dc][pid]
-        total_users = len(users_dict)
-    elif isinstance(data, list):
-        # If data is just a list of credentials
-        users_dict = {cred: None for cred in data}
-        total_users = len(users_dict)
-    else:
-        error_msg = f"Unexpected data structure. Expected dict with dc/pid keys or list of credentials."
+def normalize_credential(credential):
+    credential = str(credential).strip()
+    if credential.startswith('fed_id:'):
+        return credential
+    return f'fed_id:{credential}'
+
+
+def resolve_env_from_csv(env_raw):
+    env = (env_raw or '').strip().lower()
+    if not env:
+        return DEFAULT_ENV
+    if env not in ('mdc', 'eur'):
+        log_to_file(f'Unsupported env "{env_raw}", using default {DEFAULT_ENV}', 'warning')
+        return DEFAULT_ENV
+    return env
+
+
+def load_user_targets_from_csv(input_path):
+    csv_rows = safe_load_csv(input_path)
+    if csv_rows is None:
+        return None
+
+    targets = []
+    for credential_raw, platform_id_raw, env_raw in csv_rows:
+        platform_id = str(platform_id_raw)
+        if platform_id not in CLIENT_IDS:
+            log_to_file(f'Skipping unsupported platform_id in CSV: {platform_id}', 'warning')
+            continue
+        targets.append({
+            'credential': normalize_credential(credential_raw),
+            'platform_id': platform_id,
+            'env': resolve_env_from_csv(env_raw),
+        })
+    return targets
+
+
+def process_users_with_taskpool(targets, all_fed_users):
+    if targets is None:
+        error_msg = 'No valid input users found.'
         logger.error(error_msg)
         log_to_file(error_msg, 'error')
         return
-    
-    log_msg = f"Starting to process {total_users} users using TaskPool"
-    logger.info(log_msg)
-    log_to_file(log_msg)
-    
-    # Prepare list of already processed credentials (if any)
-    processed_credentials = set()   
 
-    # Create tasks for TaskPool
-    for cred in users_dict.keys():
-        if cred in processed_credentials:
+    total_users = len(targets)
+    start_time = time.time()
+    logger.info('TaskPool processing START TIME: %s', time.strftime('%Y-%m-%d %H:%M:%S'))
+    log_to_file(f'Starting check for {total_users} users')
+
+    jobs = []
+    for item in targets:
+        cred = item['credential']
+        platform_id = item['platform_id']
+        env = item['env']
+        fed_user = all_fed_users.get((platform_id, env))
+        if fed_user is None:
+            log_to_file(
+                f'Skipping {cred}: Fed user not initialized for platform_id={platform_id}, env={env}',
+                'warning',
+            )
             continue
-        
-        # Add task to TaskPool
         jobs += TaskPool.add_task(
-            compare_current_profile_with_backup,
-            (cred, 
-             fields_to_compare, 
-             fed_user, 
-             start_date, 
-             end_date),
+            check_sr12_skin_user,
+            (cred, fed_user),
             [],
-            get_result=True
+            get_result=True,
         )
-        # log_to_file(f"Added task for credential: {cred}")
-    
-    # Wait for all tasks to complete and get results
-    logger.info(f"Waiting for {len(jobs)} tasks to complete...")
-    
+
     results = TaskPool.wait_and_get_result(jobs)
-    
-    # DEBUG CHECK:
-    print(f"\n=== DEBUG INFO ===")
-    print(f"Total results received: {len(results)}")
-    print(f"Sample first result: {results[0][:200] if results else 'No results'}")
-    
-    successful_count = 0
-    for r in results:
-        try:
-            res = json.loads(r)
-            if res.get('status') == StatusCode.SUCCESS:
-                successful_count += 1
-        except (json.JSONDecodeError, KeyError):
-            pass
-    
-    print(f"Successful results: {successful_count}/{len(results)}")
-    print(f"=== END DEBUG ===\n")
 
-    # Prepare lists for output
-    compensation_data = {}
-
-    # Write results to output files using CSV module
+    fix_needed = []
     successful = 0
     failed = 0
-    
+
     with open(OUTPUT_FILE_CHECK, 'w', newline='', encoding='utf-8') as fd_res, \
          open(OUTPUT_FILE_ERRORS, 'w', newline='', encoding='utf-8') as fd_err:
-        
-        # Setup CSV writers
         check_writer = csv.writer(fd_res)
         error_writer = csv.writer(fd_err)
-        
-        # Write headers
-        check_writer.writerow(['credential', 'field', 'field_type', 'current_value', 
-                              'backup_value_start', 'backup_value_end', 'should_fix', 'value_to_compensate', 'max_value'])
+        check_writer.writerow([
+            'credential', 'has_inventory_skin', 'inventory_count',
+            'current_attrs', 'should_fix',
+        ])
         error_writer.writerow(['credential', 'status', 'reason'])
-        
+
         for r in results:
             try:
                 res = json.loads(r)
                 cred = res.get('credential', 'unknown')
-                
                 if res.get('status') == StatusCode.SUCCESS:
                     successful += 1
-                    # Write each field comparison result
-                    comparison_results = res.get('comparison_results', [])
-                    for comp in comparison_results:
-                        field_type = comp.get('field_type', FieldType.NORMAL)
-                        check_writer.writerow([
-                            cred,
-                            comp['field'],
-                            field_type,
-                            comp['current_value'],
-                            comp['backup_value_start'],
-                            comp['backup_value_end'],
-                            comp['should_fix'],
-                            comp['value_to_compensate'],
-                            comp.get('max_value')
-                        ])
-                        
-                        # Store compensation data if needed
-                        if comp.get('should_fix', False):
-                            if cred not in compensation_data:
-                                compensation_data[cred] = []
-                            compensation_data[cred].append({
-                                'field': comp['field'],
-                                'field_type': comp.get('field_type', FieldType.NORMAL),
-                                'should_fix': True,
-                                'current_value': comp['current_value'],
-                                'value_to_compensate': comp['value_to_compensate'],
-                                'backup_value_start': comp.get('backup_value_start'),
-                                'use_start_backup': comp.get('use_start_backup', False),
-                                'max_value': comp.get('max_value')
-                            })
+                    check_writer.writerow([
+                        cred,
+                        res.get('has_inventory_skin'),
+                        res.get('inventory_count'),
+                        json.dumps(res.get('current_attrs')) if res.get('current_attrs') is not None else '',
+                        res.get('should_fix'),
+                    ])
+                    if res.get('should_fix'):
+                        matched = next((t for t in targets if t['credential'] == cred), None)
+                        if matched:
+                            fix_needed.append(matched)
                 else:
                     failed += 1
                     error_writer.writerow([
                         cred,
                         res.get('status', 'unknown'),
-                        res.get('reason', 'unknown')
+                        res.get('reason', 'unknown'),
                     ])
-                    
             except json.JSONDecodeError as e:
-                error_msg = f"Error parsing JSON result: {str(e)}"
-                logger.error(error_msg)
-                log_to_file(error_msg, 'error')
-                error_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
                 failed += 1
+                error_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
             except Exception as e:
-                error_msg = f"Error processing result: {str(e)}"
-                logger.error(error_msg)
-                log_to_file(error_msg, 'error')
-                error_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
                 failed += 1
-    
-    completion_msg = f"Completed check processing {total_users} users. Successful: {successful}, Failed: {failed}"
-    logger.info(completion_msg)
-    log_to_file(completion_msg)
+                error_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
 
-    # Process through compensation list
-    # Write compensation data to JSON file
-    if compensation_data:
-        with open(COMPENSATION_LIST, 'w') as fd_comp:
-            json.dump(compensation_data, fd_comp, indent=2)
-            
-        completion_msg = (
-            f"Stored {len(compensation_data)} credentials "
-            f"with compensation needed in {COMPENSATION_LIST}"
-        )
-        logger.info(completion_msg)
-        log_to_file(completion_msg)
-    
-    # Skip compensation execution if dry-run mode is enabled
-    if dry_run:
-        # END TIMING (for check phase)
-        end_time = time.time()
-        logger.info(f"TaskPool processing END TIME: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        total_time = end_time - start_time
-        
-        dry_run_msg = (
-            f"DRY-RUN MODE: Skipping compensation execution. "
-            f"Found {len(compensation_data)} credentials that need compensation. "
-            f"Compensation data saved to {COMPENSATION_LIST}"
-        )
-        logger.info(dry_run_msg)
-        log_to_file(dry_run_msg)
-        
-        # Print summary
-        print(f"\n=== DRY-RUN MODE ===")
-        print(dry_run_msg)
-        print(f"\n=== CHECK PROCESSING COMPLETE ===")
-        print(f"Total time: {total_time:.2f} seconds")
-        print(f"Total users: {total_users}")
-        print(f"Successful: {successful}")
-        print(f"Failed: {failed}")
-        print(f"Results saved to: {OUTPUT_FILE_CHECK}")
-        print(f"Errors saved to: {OUTPUT_FILE_ERRORS}")
-        print(f"Compensation list saved to: {COMPENSATION_LIST}")
-        print(f"Log file: {LOG_FILE}")
-        print(f"=== END DRY-RUN ===\n")
-        return
-    
-    # Execute compensation
-    compensate_jobs = []
-    log_msg = f"Starting to process {len(compensation_data)} compensation tasks using TaskPool"
-    logger.info(log_msg)
-    log_to_file(log_msg)
-    for credential, fields in compensation_data.items():
-        compensate_jobs += TaskPool.add_task(
-            process_compensate_user,
-            (credential, 
-             fields,
-             fed_user),
+    if fix_needed:
+        with open(FIX_LIST_FILE, 'w') as fd_fix:
+            json.dump(fix_needed, fd_fix, indent=2)
+        log_to_file(f'Wrote {len(fix_needed)} user(s) needing fix to {FIX_LIST_FILE}')
+
+    elapsed = time.time() - start_time
+    log_to_file(f'Check complete. Successful: {successful}, Failed: {failed}, Need fix: {len(fix_needed)}')
+    print('\n=== CHECK COMPLETE ===')
+    print(f'Users checked: {total_users}')
+    print(f'Successful: {successful}, Failed: {failed}, Need fix: {len(fix_needed)}')
+    print(f'Check results: {OUTPUT_FILE_CHECK}')
+    print(f'Fix list: {FIX_LIST_FILE}')
+    print(f'Time: {elapsed:.2f}s\n')
+    return fix_needed
+
+
+def run_fix_from_targets(fix_targets, all_fed_users):
+    fix_jobs = []
+    for item in fix_targets:
+        cred = item['credential']
+        platform_id = item['platform_id']
+        env = item['env']
+        fed_user = all_fed_users.get((platform_id, env))
+        if fed_user is None:
+            log_to_file(
+                f'Skipping fix for {cred}: Fed user not initialized for platform_id={platform_id}, env={env}',
+                'warning',
+            )
+            continue
+        fix_jobs += TaskPool.add_task(
+            process_fix_sr12_skin_user,
+            (cred, fed_user),
             [],
-            get_result=True
+            get_result=True,
         )
-    compensate_results = TaskPool.wait_and_get_result(compensate_jobs)    
-    # Process compensation results
-    successful_compensation = 0
-    failed_compensation = 0
-    # Write results to output files using CSV module
-    with open(OUTPUT_COMPENSATE_FAILED, 'w', newline='', encoding='utf-8') as cp_res:
-        failed_writer = csv.writer(cp_res)
-        failed_writer.writerow(['credential', 'status', 'reason'])
-        
-        for r in compensate_results:
+    return TaskPool.wait_and_get_result(fix_jobs)
+
+
+def apply_loadout_fixes(fix_targets, all_fed_users):
+    if not fix_targets:
+        print('No users need fixing.')
+        return
+
+    start_time = time.time()
+    log_to_file(f'Applying loadout fix for {len(fix_targets)} user(s)')
+    fix_results = run_fix_from_targets(fix_targets, all_fed_users)
+
+    fix_ok = 0
+    fix_fail = 0
+    with open(OUTPUT_FIX_FAILED, 'w', newline='', encoding='utf-8') as fd_fail:
+        fail_writer = csv.writer(fd_fail)
+        fail_writer.writerow(['credential', 'status', 'reason'])
+        for r in fix_results:
             try:
                 res = json.loads(r)
-                cred = res.get('credential', 'unknown')
                 if res.get('status') == StatusCode.SUCCESS:
-                    successful_compensation += 1
+                    fix_ok += 1
                 else:
-                    failed_compensation += 1
-                    failed_writer.writerow([
-                        cred,
-                        res.get('status', 'unknown'),
-                        res.get('reason', 'unknown')
+                    fix_fail += 1
+                    fail_writer.writerow([
+                        res.get('credential', 'unknown'),
+                        res.get('status'),
+                        res.get('reason'),
                     ])
-                    error_msg = f"Compensation failed for {cred} with status: {res.get('status', 'unknown')}"
-                    logger.error(error_msg)
-                    log_to_file(error_msg, 'error')
-            except json.JSONDecodeError as e:
-                error_msg = f"Error parsing compensation result JSON: {str(e)}"
-                logger.error(error_msg)
-                log_to_file(error_msg, 'error')
-                failed_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
-                failed_compensation += 1
             except Exception as e:
-                error_msg = f"Error processing compensation result: {str(e)}"
-                logger.error(error_msg)
-                log_to_file(error_msg, 'error')
-                failed_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
-                failed_compensation += 1
+                fix_fail += 1
+                fail_writer.writerow(['unknown', StatusCode.ERROR, str(e)])
 
-    # Log compensation results
-    completion_msg = (
-        f"Compensation completed for {successful_compensation}/{len(compensate_results)} credentials."
-    )
-    logger.info(completion_msg)
-    log_to_file(completion_msg)
+    print('\n=== FIX COMPLETE ===')
+    print(f'Fixed: {fix_ok}, Failed: {fix_fail}')
+    print(f'Failed details: {OUTPUT_FIX_FAILED}')
+    print(f'Time: {time.time() - start_time:.2f}s\n')
 
-    if failed_compensation > 0:
-        error_msg = f"Failed to compensate {failed_compensation} credentials."
-        logger.error(error_msg)
-        log_to_file(error_msg, 'error')
 
-    # END TIMING
-    end_time = time.time()
-    logger.info(f"TaskPool processing END TIME: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    total_time = end_time - start_time
-    # Also log summary to console
-    print(f"\n=== PROCESSING COMPLETE ===")
-    print(f"Total time: {total_time:.2f} seconds")
-    print(f"Total users: {total_users}")
-    print(f"Successful: {successful}")
-    print(f"Failed: {failed}")
-    print(f"Results saved to: {OUTPUT_FILE_CHECK}")
-    print(f"Errors saved to: {OUTPUT_FILE_ERRORS}")
-    print(f"Log file: {LOG_FILE}")
+def load_fix_targets_from_file(filepath):
+    data = safe_load_json(filepath)
+    if not data:
+        return []
 
-def generate_simulated_credentials(count=500):
-    """Generate simulated credentials."""
-    import uuid
-    real_creds = [
-        "fed_id:0cb6edb8-098a-11e7-abaf-b8ca3a60b6e4",
-        "fed_id:ca1ffbf6-77d7-11eb-902c-b8ca3a603534",
-        "fed_id:d69a00f2-b6f7-11f0-9e83-b8ca3a660720",
-        "fed_id:ac71b19e-e5b2-11e6-b11c-b8ca3a603534",
-        "fed_id:e9b197d4-d742-11f0-a6db-b8ca3a660720"
-    ]
-    simulated = real_creds.copy()
-    for i in range(count - len(real_creds)):
-        simulated.append(f"fed_id:{uuid.uuid4()}")
-    return simulated
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data
+
+    # Backward compatibility: list of credential strings
+    if isinstance(data, list):
+        return [{'credential': normalize_credential(c), 'platform_id': None, 'env': DEFAULT_ENV} for c in data]
+
+    return []
+
 
 ##################################################################################################
 
-if __name__ == "__main__":
-    # Log script start
-    start_msg = "Script started"
-    logger.info(start_msg)
-    log_to_file(start_msg)
-    log_to_file(f"Log file: {LOG_FILE}")
-    log_to_file(f"Output file: {OUTPUT_FILE_CHECK}")
-    log_to_file(f"Errors file: {OUTPUT_FILE_ERRORS}")
-    
-    # Validate configuration
+if __name__ == '__main__':
+    logger.info('Script started')
+    log_to_file('Script started')
+
     is_valid, error_msg = validate_config(CONFIG)
     if not is_valid:
-        error_msg_full = f"Configuration validation failed: {error_msg}"
-        logger.error(error_msg_full)
-        log_to_file(error_msg_full, 'error')
-        print(f"ERROR: {error_msg_full}")
+        print(f'ERROR: Configuration validation failed: {error_msg}')
         sys.exit(1)
-    
-    # Config (edit values in CONFIG at the top of the file)
-    dry_run = CONFIG['dry_run']
-    get_compensation = CONFIG['get_compensation']
-    run_test = CONFIG['run_test']
-    pid = CONFIG['pid']
-    dc = CONFIG['dc']
-    fields_to_check = CONFIG['fields_to_check']
-    start_date = CONFIG['start_date']
-    end_date = CONFIG['end_date']
-    
-    # Log dry-run mode if enabled
-    if dry_run:
-        dry_run_msg = "DRY-RUN MODE: Compensation execution will be skipped"
-        logger.info(dry_run_msg)
-        log_to_file(dry_run_msg)
-    
-    # Load user list from file
-    log_to_file(f"Loading data from: {INPUT_FILE}")
-    data = safe_load_json(INPUT_FILE)
-    # data = generate_simulated_credentials()
 
-    if data:
-        if isinstance(data, dict):
-            data_size = "dict with keys: " + ", ".join(data.keys())
-        elif isinstance(data, list):
-            data_size = f"list with {len(data)} items"
-        else:
-            data_size = str(type(data))
-        
-        log_msg = f"Successfully loaded data: {data_size}"
-        logger.info(log_msg)
-        log_to_file(log_msg)
-    else:
-        error_msg = "Failed to load JSON data from input file"
-        logger.error(error_msg)
-        log_to_file(error_msg, 'error')
+    run_inventory_check = CONFIG['run_inventory_check']
+    apply_loadout_fix = CONFIG['apply_loadout_fix']
+    users_input_file = CONFIG['users_input_file']
+
+    targets = load_user_targets_from_csv(users_input_file)
+    if not targets:
+        log_to_file(f'No valid users loaded from CSV: {users_input_file}', 'error')
         sys.exit(1)
-    
-    # Choose client id
-    clientId = chose_client_id(pid, dc)
-    if not clientId:
-        error_msg = f"No client ID found for pid={pid}, dc={dc}"
-        logger.error(error_msg)
-        log_to_file(error_msg, 'error')
-        sys.exit(1)
-    
-    log_msg = f"Using client id: {clientId}"
-    logger.info(log_msg)
-    log_to_file(log_msg)
-    
-    # Prepare fed user
+
     try:
-        fed_user = prepare_fed_user(client_id=clientId, dc=dc)
+        all_fed_users = prepare_all_fed_users()
+        log_to_file(f'Initialized {len(all_fed_users)} Fed user(s) for all platform/env combinations')
     except Exception as e:
-        error_msg = f"Failed to prepare FedWrapper user: {str(e)}"
-        logger.error(error_msg)
-        log_to_file(error_msg, 'error')
+        log_to_file(f'Failed to initialize Fed users: {e}', 'error')
         sys.exit(1)
-    
-    # Process users with TaskPool to generate compensation_needed.json
-    if get_compensation:
+
+    fix_needed = []
+    if run_inventory_check:
         try:
-            process_check_users_with_taskpool(
-                data=data,
-                pid=pid,
-                dc=dc,
-                fed_user=fed_user,
-                fields_to_compare=fields_to_check,
-                start_date=start_date,
-                end_date=end_date,
-                dry_run=dry_run
+            fix_needed = process_users_with_taskpool(
+                targets=targets,
+                all_fed_users=all_fed_users,
             )
         except Exception as e:
-            error_msg = f"Error during processing: {str(e)}"
-            logger.exception(error_msg)
-            log_to_file(error_msg, 'error')
+            logger.exception('Error during check: %s', e)
+            log_to_file(f'Error during check: {e}', 'error')
             sys.exit(1)
 
-    # Optionally run test compensation from COMPENSATION_LIST
-    if run_test:
-        log_to_file(f"Loading compensation test data from: {COMPENSATION_LIST}")
-        test_data = safe_load_json(COMPENSATION_LIST)
-        if not test_data:
-            log_to_file(f"No test compensation data found in {COMPENSATION_LIST}", 'warning')
+    if apply_loadout_fix:
+        # Use users from this run's check, or from fix list file (e.g. a later run)
+        fix_targets = fix_needed if fix_needed else load_fix_targets_from_file(FIX_LIST_FILE)
+        if not fix_targets:
+            log_to_file('No users to fix', 'warning')
         else:
-            test_result = {}
-            for credential, fields in test_data.items():
-                result = process_compensate_user(
-                    credential=credential,
-                    fields=fields,
-                    fed_user=fed_user
-                )
-                test_result[credential] = result
-            log_to_file(f"Test compensation applied for {len(test_result)} credential(s) from {COMPENSATION_LIST}")
+            apply_loadout_fixes(fix_targets, all_fed_users)
 
-    # Log script completion
-    end_msg = "Script completed successfully"
-    logger.info(end_msg)
-    log_to_file(end_msg)
+    logger.info('Script completed')
+    log_to_file('Script completed')
